@@ -2,8 +2,8 @@
 
 namespace Server
 {
-    public static class QuizRoomList
+    internal static class QuizRoomList
     {
-        public static List<QuizRoom> Rooms = new List<QuizRoom>();
+        public static List<QuizRoom> Rooms { get; } = new List<QuizRoom>();
     }
 }
