@@ -19,12 +19,15 @@ namespace Client
                 Console.WriteLine("Da ket noi toi server Quiz Duel!");
                 Console.WriteLine("Meo: Khi co cau hoi, chi nhap A/B/C/D roi Enter. (/quit de thoat)");
 
-                // Thread nhan tin tu server
+                bool awaitingName = true;      // <-- LẦN ĐẦU là NHẬP TÊN
+                bool closed = false;
+
+                // Thread nhan tin
                 var receiveThread = new Thread(() =>
                 {
                     try
                     {
-                        var buffer = new byte[2048];
+                        var buffer = new byte[4096];
                         while (true)
                         {
                             int bytes = client.Receive(buffer);
@@ -36,37 +39,42 @@ namespace Client
                             Console.Write("> ");
                         }
                     }
-                    catch
-                    {
-                        // server dong ket noi
-                    }
+                    catch { }
                     finally
                     {
+                        closed = true;
                         Console.WriteLine("\nMat ket noi voi server.");
                     }
                 });
                 receiveThread.IsBackground = true;
                 receiveThread.Start();
 
-                // Vong lap nhap lenh/tra loi
-                while (true)
+                // Vong lap nhap
+                while (!closed)
                 {
                     Console.Write("> ");
                     string input = Console.ReadLine();
                     if (input == null) continue;
-
                     input = input.Trim();
                     if (input.Length == 0) continue;
 
-                    // lenh thoat
+                    if (awaitingName)
+                    {
+                        // GỬI TÊN TỰ DO (không ép A/B/C/D)
+                        byte[] data = Encoding.UTF8.GetBytes(input);
+                        client.Send(data);
+                        awaitingName = false;   // từ sau mới kiểm tra A/B/C/D
+                        continue;
+                    }
+
                     if (input.Equals("/quit", StringComparison.OrdinalIgnoreCase))
                     {
                         try { client.Shutdown(SocketShutdown.Both); } catch { }
-                        client.Close();
+                        try { client.Close(); } catch { }
                         break;
                     }
 
-                    // Chi gui A/B/C/D: lay ky tu dau, viet hoa
+                    // Từ đây trở đi chỉ chấp nhận A/B/C/D
                     char first = char.ToUpperInvariant(input[0]);
                     if (first == 'A' || first == 'B' || first == 'C' || first == 'D')
                     {
@@ -75,7 +83,6 @@ namespace Client
                     }
                     else
                     {
-                        // Khong phai A/B/C/D -> bo qua de tranh gay nhieu
                         Console.WriteLine("Chi chap nhan A/B/C/D (hoac /quit).");
                     }
                 }

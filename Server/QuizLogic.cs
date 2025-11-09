@@ -4,32 +4,82 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace Server
 {
     internal static class QuizLogic
     {
-        // Tạo bộ câu hỏi demo (bạn thay bằng dữ liệu thực nếu muốn)
-        private static List<Question> BuildQuestions()
+        private static readonly Random Rng = new Random();
+
+        // Tao cau hoi tinh nham cong/tru, so hang < 50; phep cong khong gioi han ket qua
+        private static List<Question> BuildQuestionsArithmetic(int count)
         {
-            return new List<Question>
+            var list = new List<Question>();
+            for (int i = 0; i < count; i++)
             {
-                new Question { Text="Thủ đô Việt Nam?",
-                    A="Hà Nội", B="Đà Nẵng", C="Hải Phòng", D="TP.HCM", Correct='A' },
-                new Question { Text="2 + 2 = ?",
-                    A="3", B="4", C="5", D="22", Correct='B' },
-                new Question { Text="Giao thức dùng kết nối tin cậy?",
-                    A="UDP", B="TCP", C="ICMP", D="ARP", Correct='B' },
-            };
+                bool isAdd = Rng.Next(2) == 0;
+
+                int a, b, ans;
+                if (isAdd)
+                {
+                    a = Rng.Next(1, 50);      // 1..49
+                    b = Rng.Next(1, 50);      // 1..49
+                    ans = a + b;              // co the > 50
+                }
+                else
+                {
+                    a = Rng.Next(2, 50);      // 2..49
+                    b = Rng.Next(1, a);       // 1..a-1 => ket qua duong
+                    ans = a - b;
+                }
+
+                // Tao 3 dap an sai lech nho quanh ans
+                var opts = new HashSet<int> { ans };
+                while (opts.Count < 4)
+                {
+                    int delta = Rng.Next(1, 8); // lech 1..7
+                    int candidate = ans + (Rng.Next(2) == 0 ? -delta : delta);
+                    if (candidate != ans && candidate > -100 && candidate < 200) // gioi han hop ly
+                        opts.Add(candidate);
+                }
+
+                var arr = opts.ToList();
+                // Tron
+                for (int k = 0; k < arr.Count; k++)
+                {
+                    int j = Rng.Next(k, arr.Count);
+                    int tmp = arr[k]; arr[k] = arr[j]; arr[j] = tmp;
+                }
+
+                char correctLetter = 'A';
+                if (arr[0] == ans) correctLetter = 'A';
+                else if (arr[1] == ans) correctLetter = 'B';
+                else if (arr[2] == ans) correctLetter = 'C';
+                else correctLetter = 'D';
+
+                string text = isAdd
+                    ? $"Tinh nhanh: {a} + {b} = ?"
+                    : $"Tinh nhanh: {a} - {b} = ?";
+
+                list.Add(new Question
+                {
+                    Text = text,
+                    A = arr[0].ToString(),
+                    B = arr[1].ToString(),
+                    C = arr[2].ToString(),
+                    D = arr[3].ToString(),
+                    Correct = correctLetter
+                });
+            }
+            return list;
         }
 
         public static void StartQuiz(QuizRoom room)
         {
             room.Init();
-            room.Questions = BuildQuestions();
+            room.Questions = BuildQuestionsArithmetic(5); // so cau tuy chinh
 
-            Broadcast(room, "\n=== BẮT ĐẦU TRÒ CHƠI ===\nLuật: Mỗi câu có 10s. Điểm bắt đầu 1000, cứ mỗi 0.5s trừ 50. Trả lời A/B/C/D.\n");
+            Broadcast(room, "\n=== BAT DAU TRO CHOI ===\nLuat: Moi cau co 10s. Diem bat dau 1000, moi 0.5s tru 50. Nhap A/B/C/D.\n");
 
             for (int i = 0; i < room.Questions.Count; i++)
             {
@@ -38,34 +88,28 @@ namespace Server
                     room.CurrentIndex = i;
                     room.Answers[room.Player1] = null;
                     room.Answers[room.Player2] = null;
+                    room.AnswerTimes[room.Player1] = TimeSpan.MaxValue;
+                    room.AnswerTimes[room.Player2] = TimeSpan.MaxValue;
                 }
 
                 var q = room.Questions[i];
                 SendQuestion(room, q, i + 1, room.Questions.Count);
 
-                // Bắt thời gian cho câu này
                 room.RoundWatch.Restart();
-
-                // Đợi tối đa 10s, hoặc hết sớm nếu cả 2 đã trả lời
                 WaitUntilAnsweredOrTimeout(room, TimeSpan.FromSeconds(10));
-
-                // Tính điểm + công bố BXH
                 ScoreAndAnnounce(room, q);
-
                 room.RoundWatch.Reset();
             }
 
-            // Kết thúc game: công bố người thắng
             AnnounceWinner(room);
         }
 
-        /// <summary>
-        /// Nhận dữ liệu từ client (Program.HandleClient gọi vào).
-        /// Hợp lệ nếu là chuỗi A/B/C/D (không phân biệt hoa thường).
-        /// </summary>
+        // Nhan A/B/C/D
         public static void HandleLogic(Socket client, string raw)
         {
-            char ans = Char.ToUpperInvariant(raw.Trim().FirstOrDefault());
+            if (string.IsNullOrWhiteSpace(raw)) return;
+
+            char ans = Char.ToUpperInvariant(raw.Trim()[0]);
             if (ans != 'A' && ans != 'B' && ans != 'C' && ans != 'D') return;
 
             var room = FindRoom(client);
@@ -73,31 +117,29 @@ namespace Server
 
             lock (room.LockObj)
             {
-                // Nếu đã hết giờ thì bỏ qua
                 if (!room.RoundWatch.IsRunning) return;
 
-                // Chỉ nhận lần đầu của mỗi người chơi
                 if (room.Answers.ContainsKey(client) && room.Answers[client] == null)
                 {
                     room.Answers[client] = ans;
-                    // Phản hồi đã nhận
-                    SafeSend(client, $"Đã nhận đáp án: {ans}\n");
+                    room.AnswerTimes[client] = room.RoundWatch.Elapsed; // thoi diem ca nhan
+                    SafeSend(client, "Da nhan dap an: " + ans + "\n");
                 }
             }
         }
 
-        // ====== Helpers ======
+        // ===== Helpers =====
 
         private static void SendQuestion(QuizRoom room, Question q, int index, int total)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"\n--- Câu {index}/{total} ---");
+            sb.AppendLine("\n--- Cau " + index + "/" + total + " ---");
             sb.AppendLine(q.Text);
-            sb.AppendLine($"A) {q.A}");
-            sb.AppendLine($"B) {q.B}");
-            sb.AppendLine($"C) {q.C}");
-            sb.AppendLine($"D) {q.D}");
-            sb.AppendLine("Bạn có 10 giây. Gõ A/B/C/D rồi Enter.");
+            sb.AppendLine("A) " + q.A);
+            sb.AppendLine("B) " + q.B);
+            sb.AppendLine("C) " + q.C);
+            sb.AppendLine("D) " + q.D);
+            sb.AppendLine("Ban co 10 giay. Go A/B/C/D roi Enter.");
             Broadcast(room, sb.ToString());
         }
 
@@ -114,7 +156,6 @@ namespace Server
                 if (allAnswered) break;
                 Thread.Sleep(50);
             }
-            // Hết vòng
             room.RoundWatch.Stop();
         }
 
@@ -123,27 +164,27 @@ namespace Server
             if (!isCorrect) return 0;
             if (elapsed.TotalSeconds > 10) return 0;
 
-            // Mỗi 0.5s trừ 50 điểm kể từ 1000
             int steps = (int)Math.Floor(elapsed.TotalMilliseconds / 500.0);
             int score = 1000 - 50 * steps;
-            return Math.Max(0, score);
+            if (score < 0) score = 0;
+            return score;
         }
 
         private static void ScoreAndAnnounce(QuizRoom room, Question q)
         {
-            TimeSpan elapsed = room.RoundWatch.Elapsed;
-
-            // Lấy đáp án 2 người
             char? a1, a2;
+            TimeSpan t1, t2;
+
             lock (room.LockObj)
             {
                 a1 = room.Answers[room.Player1];
                 a2 = room.Answers[room.Player2];
+                t1 = room.AnswerTimes[room.Player1];
+                t2 = room.AnswerTimes[room.Player2];
             }
 
-            // Tính điểm
-            int s1 = ComputeScore(elapsed, a1.HasValue && a1.Value == q.Correct);
-            int s2 = ComputeScore(elapsed, a2.HasValue && a2.Value == q.Correct);
+            int s1 = ComputeScore(t1, a1.HasValue && a1.Value == q.Correct);
+            int s2 = ComputeScore(t2, a2.HasValue && a2.Value == q.Correct);
 
             lock (room.LockObj)
             {
@@ -151,52 +192,59 @@ namespace Server
                 room.Scores[room.Player2] += s2;
             }
 
-            // Công bố kết quả câu
-            var msg =
-                $"Kết quả câu: đáp án đúng = {q.Correct}\n" +
-                $"Player1 (+{s1}) | Player2 (+{s2})\n";
+            string name1 = room.Names.ContainsKey(room.Player1) ? room.Names[room.Player1] : "Nguoi choi 1";
+            string name2 = room.Names.ContainsKey(room.Player2) ? room.Names[room.Player2] : "Nguoi choi 2";
 
-            Broadcast(room, msg);
+            var msg = new StringBuilder();
+            msg.AppendLine("Ket qua cau: dap an dung = " + q.Correct);
+            msg.AppendLine(name1 + " (+" + s1 + ") | " + name2 + " (+" + s2 + ")");
+            Broadcast(room, msg.ToString());
 
-            // Bảng xếp hạng tạm thời
             AnnounceLeaderboard(room);
         }
 
         private static void AnnounceLeaderboard(QuizRoom room)
         {
+            string name1 = room.Names.ContainsKey(room.Player1) ? room.Names[room.Player1] : "Nguoi choi 1";
+            string name2 = room.Names.ContainsKey(room.Player2) ? room.Names[room.Player2] : "Nguoi choi 2";
+
             var pairs = new[]
             {
-                (Name:"Player1", Score:room.Scores[room.Player1], Sock:room.Player1),
-                (Name:"Player2", Score:room.Scores[room.Player2], Sock:room.Player2),
+                new { Name = name1, Score = room.Scores[room.Player1] },
+                new { Name = name2, Score = room.Scores[room.Player2] }
             }
             .OrderByDescending(p => p.Score)
             .ToList();
 
             var sb = new StringBuilder();
-            sb.AppendLine("=== Bảng xếp hạng hiện tại ===");
+            sb.AppendLine("=== Bang xep hang hien tai ===");
             for (int i = 0; i < pairs.Count; i++)
-            {
-                sb.AppendLine($"{i + 1}. {pairs[i].Name}: {pairs[i].Score} điểm");
-            }
+                sb.AppendLine((i + 1) + ". " + pairs[i].Name + ": " + pairs[i].Score + " diem");
+
             Broadcast(room, sb.ToString());
         }
 
         private static void AnnounceWinner(QuizRoom room)
         {
+            string name1 = room.Names.ContainsKey(room.Player1) ? room.Names[room.Player1] : "Nguoi choi 1";
+            string name2 = room.Names.ContainsKey(room.Player2) ? room.Names[room.Player2] : "Nguoi choi 2";
             int s1 = room.Scores[room.Player1];
             int s2 = room.Scores[room.Player2];
 
             string result;
-            if (s1 > s2) result = $" Player1 thắng với {s1} điểm! Player2: {s2} điểm";
-            else if (s2 > s1) result = $" Player2 thắng với {s2} điểm! Player1: {s1} điểm";
-            else result = $" Hòa! Cùng {s1} điểm";
+            if (s1 > s2) result = "🏆 " + name1 + " thang voi " + s1 + " diem! " + name2 + ": " + s2 + " diem";
+            else if (s2 > s1) result = "🏆 " + name2 + " thang voi " + s2 + " diem! " + name1 + ": " + s1 + " diem";
+            else result = "🤝 Hoa! Moi nguoi " + s1 + " diem";
 
-            Broadcast(room, "\n=== TRÒ CHƠI KẾT THÚC ===\n" + result + "\n");
+            Broadcast(room, "\n=== TRO CHOI KET THUC ===\n" + result + "\n");
         }
 
         private static QuizRoom FindRoom(Socket anyPlayer)
         {
-            return QuizRoomList.Rooms.FirstOrDefault(r => r.Player1 == anyPlayer || r.Player2 == anyPlayer);
+            foreach (var r in QuizRoomList.Rooms)
+                if (r.Player1 == anyPlayer || r.Player2 == anyPlayer)
+                    return r;
+            return null; // cho phep null trong C# 7.3
         }
 
         private static void Broadcast(QuizRoom room, string message)
@@ -212,7 +260,7 @@ namespace Server
                 byte[] data = Encoding.UTF8.GetBytes(message);
                 sock.Send(data);
             }
-            catch { /* bỏ qua lỗi send khi client thoát */ }
+            catch { }
         }
     }
 }
